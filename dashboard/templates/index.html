@@ -1,0 +1,630 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weather Fusion Dashboard</title>
+<script src="https://cdn.jsdelivr.net/npm/chart.js" onerror="loadChartFallback()"></script>
+<script>
+function loadChartFallback() {
+  if (window.__chartFallbackLoading || window.Chart) return;
+  window.__chartFallbackLoading = true;
+  const script = document.createElement('script');
+  script.src = 'https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js';
+  script.onload = () => {
+    window.__chartFallbackLoading = false;
+    if (typeof loadDashboard === 'function') loadDashboard();
+  };
+  script.onerror = () => {
+    window.__chartFallbackLoading = false;
+    const n = document.getElementById('timeChartNote');
+    const p = document.getElementById('provinceChartNote');
+    if (n) n.textContent = 'โหลด Chart.js ไม่สำเร็จ ตรวจสอบอินเทอร์เน็ตหรือการเข้าถึง CDN';
+    if (p) { p.hidden = false; p.textContent = 'โหลด Chart.js ไม่สำเร็จ กราฟไม่สามารถแสดงได้ แต่ตารางและตัวเลขสรุปยังใช้งานได้'; }
+  };
+  document.head.appendChild(script);
+}
+</script>
+
+<style>
+:root {
+  --bg:#0b1220;
+  --card:#131e31;
+  --muted:#9fb0c7;
+  --text:#eef5ff;
+  --line:#26364f;
+  --cyan:#4dd8e8;
+}
+* { box-sizing:border-box }
+body {
+  margin:0;
+  background:var(--bg);
+  color:var(--text);
+  font:15px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+header {
+  padding:26px max(20px,calc((100% - 1200px)/2));
+  background:linear-gradient(120deg,#112744,#102f42);
+  border-bottom:1px solid var(--line);
+}
+header h1 { margin:0;font-size:27px }
+header p { margin:5px 0 0;color:var(--muted) }
+main { max-width:1200px;margin:22px auto;padding:0 18px }
+.filters {
+  display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;
+}
+select,input,button {
+  background:#101a2b;color:var(--text);
+  border:1px solid var(--line);padding:10px 12px;border-radius:9px;
+}
+button {
+  background:#087e91;border-color:#087e91;
+  font-weight:700;cursor:pointer;
+}
+button:hover { filter:brightness(1.15) }
+.kpis {
+  display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+  gap:12px;margin-bottom:14px;
+}
+.card {
+  background:var(--card);border:1px solid var(--line);
+  border-radius:14px;padding:16px;min-width:0;
+}
+.kpi-label { color:var(--muted);font-size:13px }
+.kpi-value { font-size:27px;font-weight:750;margin-top:5px }
+.grid {
+  display:grid;grid-template-columns:1.4fr 1fr;
+  gap:14px;margin-bottom:14px;
+}
+.card h2 { font-size:17px;margin:0 0 12px }
+.chart-wrap { position:relative;width:100%;min-width:0 }
+.time-chart { height:300px }
+.province-chart { height:650px }
+.table-wrap { overflow:auto;max-height:430px }
+table { border-collapse:collapse;width:100%;font-size:13px;white-space:nowrap }
+th,td { padding:10px;border-bottom:1px solid var(--line);text-align:left }
+th { position:sticky;top:0;background:#192840;color:#cfe4ff }
+.pill {
+  display:inline-block;padding:3px 8px;border-radius:20px;
+  background:#1e3946;color:#7ee7f0;font-size:12px;
+}
+.status-list { display:grid;gap:8px }
+.status-row {
+  padding:10px;border:1px solid var(--line);
+  border-radius:9px;overflow-wrap:anywhere;
+}
+.small { color:var(--muted);font-size:12px }
+.error { color:#ff9c9c }
+.footer { color:var(--muted);font-size:12px;padding:18px 0 }
+.chart-note { color:var(--muted);font-size:12px;margin:0 0 12px }
+.empty { color:var(--muted);padding:20px;text-align:center }
+@media(max-width:800px) {
+  .kpis { grid-template-columns:repeat(2,minmax(0,1fr)) }
+  .grid { grid-template-columns:1fr }
+  header h1 { font-size:22px }
+  .time-chart { height:260px }
+  .province-chart { height:550px }
+}
+@media(max-width:480px) {
+  .kpis { grid-template-columns:1fr 1fr;gap:8px }
+  .kpi-value { font-size:23px }
+  .card { padding:12px }
+  .filters label { display:flex;flex-direction:column;gap:4px }
+}
+</style>
+</head>
+
+<body>
+<header>
+  <h1>🌦 Weather Fusion</h1>
+  <p>ระบบรวบรวมสภาพอากาศหลายแหล่งด้วย Apache Airflow และ PostgreSQL</p>
+</header>
+
+<main>
+  <div class="filters">
+    <select id="location"><option value="">ทุกจังหวัด</option></select>
+    <select id="source"><option value="">ทุกแหล่งข้อมูล</option></select>
+    <label>จาก <input id="dateFrom" type="date"></label>
+    <label>ถึง <input id="dateTo" type="date"></label>
+    <button onclick="loadDashboard()">ใช้ตัวกรอง</button>
+    <button onclick="clearFilters()">ล้างตัวกรอง</button>
+  </div>
+  <div id="dashboardError" class="small error" role="status" aria-live="polite" style="margin:0 0 12px"></div>
+
+  <section class="kpis">
+    <div class="card">
+      <div class="kpi-label">รายการข้อมูล</div>
+      <div class="kpi-value" id="records">—</div>
+    </div>
+    <div class="card">
+      <div class="kpi-label">จังหวัด/พื้นที่</div>
+      <div class="kpi-value" id="locations">—</div>
+    </div>
+    <div class="card">
+      <div class="kpi-label">อุณหภูมิเฉลี่ย (°C)</div>
+      <div class="kpi-value" id="avgTemp">—</div>
+    </div>
+    <div class="card">
+      <div class="kpi-label">ปริมาณฝนรวมของรายการ (mm)</div>
+      <div class="kpi-value" id="rain">—</div>
+    </div>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <h2>กราฟอุณหภูมิตามเวลา</h2>
+      <p class="chart-note">แสดงค่าเฉลี่ยตามเวลาของข้อมูลที่ตรงกับตัวกรอง</p>
+      <div class="chart-wrap time-chart">
+        <canvas id="weatherChart"></canvas>
+      </div>
+      <div id="timeChartNote" class="chart-note"></div>
+    </div>
+
+    <div class="card">
+      <h2>Pipeline Status</h2>
+      <div class="small">สถานะการดึงข้อมูลและโหลดลงฐานข้อมูลจาก Airflow</div>
+      <div id="pipeline" class="status-list" style="margin-top:12px">
+        กำลังโหลด...
+      </div>
+      <p>
+        <a href="http://localhost:8080" target="_blank"
+           style="color:var(--cyan)">เปิด Airflow UI ↗</a>
+      </p>
+    </div>
+  </section>
+
+  <section class="card" style="margin-bottom:14px">
+    <h2>เปรียบเทียบอุณหภูมิรายจังหวัด</h2>
+    <p class="chart-note">
+      เรียงจากอุณหภูมิสูงสุดไปต่ำสุด ใช้ข้อมูลจริงจาก API
+      โดยตัวกรองจังหวัด แหล่งข้อมูล และวันที่จะมีผลกับกราฟนี้ด้วย
+    </p>
+    <div class="chart-wrap province-chart">
+      <canvas id="provinceChart"></canvas>
+    </div>
+    <div id="provinceChartNote" class="empty" hidden></div>
+  </section>
+
+  <section class="card">
+    <h2>
+      ตารางข้อมูลสภาพอากาศ
+      <span class="pill" id="sourceCount">0 sources</span>
+    </h2>
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>เวลา</th>
+            <th>จังหวัด</th>
+            <th>แหล่ง</th>
+            <th>อุณหภูมิ °C</th>
+            <th>ความชื้น %</th>
+            <th>ฝน mm</th>
+            <th>รายละเอียด</th>
+          </tr>
+        </thead>
+        <tbody id="tbody">
+          <tr><td colspan="7">กำลังโหลดข้อมูล...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <div class="footer">
+    แหล่งข้อมูลอาจรายงานคนละเวลาและคนละสถานี
+    โปรดดูคอลัมน์แหล่งข้อมูลประกอบการเปรียบเทียบ
+  </div>
+</main>
+
+<script>
+let chart = null;
+let provinceChart = null;
+
+async function initFilters() {
+  try {
+    const r = await fetch('/api/filters');
+    if (!r.ok) throw new Error('โหลดตัวกรองไม่สำเร็จ');
+
+    const d = await r.json();
+    const loc = document.getElementById('location');
+    const src = document.getElementById('source');
+
+    (d.locations || []).forEach(x => loc.add(new Option(x, x)));
+    (d.sources || []).forEach(x => src.add(new Option(x, x)));
+  } catch (e) {
+    console.error('initFilters:', e);
+  }
+}
+
+function params() {
+  const p = new URLSearchParams();
+
+  [
+    ['location', 'location'],
+    ['source', 'source'],
+    ['date_from', 'dateFrom'],
+    ['date_to', 'dateTo']
+  ].forEach(([key, id]) => {
+    const value = document.getElementById(id).value;
+    if (value) p.set(key, value);
+  });
+
+  return p.toString();
+}
+
+function fmt(v) {
+  return v === null || v === undefined || v === '' ? '—' : v;
+}
+
+function numeric(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
+function chartTheme() {
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    plugins: {
+      legend: {
+        labels: { color: '#eef5ff' }
+      },
+      tooltip: {
+        backgroundColor: '#192840',
+        titleColor: '#eef5ff',
+        bodyColor: '#eef5ff',
+        borderColor: '#26364f',
+        borderWidth: 1
+      }
+    },
+    scales: {
+      x: {
+        ticks: { color: '#9fb0c7', maxTicksLimit: 8 },
+        grid: { color: '#26364f' }
+      },
+      y: {
+        ticks: { color: '#9fb0c7' },
+        grid: { color: '#26364f' }
+      }
+    }
+  };
+}
+
+function renderTimeChart(rows) {
+  const note = document.getElementById('timeChartNote');
+  if (typeof window.Chart === 'undefined') {
+    note.textContent = 'ยังโหลด Chart.js ไม่สำเร็จ — ข้อมูลสรุปและตารางยังแสดงได้';
+    return;
+  }
+
+  const labels = rows.map(x => new Date(x.hour).toLocaleString());
+  const temps = rows.map(x => numeric(x.temperature));
+
+  if (chart) chart.destroy();
+
+  chart = new Chart(document.getElementById('weatherChart'), {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        label: 'อุณหภูมิเฉลี่ย °C',
+        data: temps,
+        borderColor: '#4dd8e8',
+        backgroundColor: 'rgba(77,216,232,.15)',
+        pointBackgroundColor: '#4dd8e8',
+        pointRadius: 4,
+        fill: true,
+        tension: 0.25,
+        spanGaps: true
+      }]
+    },
+    options: {
+      ...chartTheme(),
+      scales: {
+        ...chartTheme().scales,
+        x: {
+          ...chartTheme().scales.x,
+          type: 'category'
+        }
+      }
+    }
+  });
+
+  note.textContent = rows.length === 1
+    ? 'ขณะนี้มีข้อมูลเพียง 1 ช่วงเวลา กราฟจะแสดงจุดเดียวจนกว่าจะมีข้อมูลจากรอบอื่น'
+    : rows.length === 0
+      ? 'ไม่มีข้อมูลเวลาให้แสดงตามตัวกรองนี้'
+      : `มีข้อมูล ${rows.length} ช่วงเวลา`;
+}
+
+function renderProvinceChart(rows) {
+  const canvas = document.getElementById('provinceChart');
+  const note = document.getElementById('provinceChartNote');
+
+  if (typeof window.Chart === 'undefined') {
+    canvas.hidden = true;
+    note.hidden = false;
+    note.textContent = 'ยังโหลด Chart.js ไม่สำเร็จ — ข้อมูลสรุปและตารางยังแสดงได้';
+    return;
+  }
+
+  if (provinceChart) {
+    provinceChart.destroy();
+    provinceChart = null;
+  }
+
+  const data = (rows || [])
+    .filter(x => x.location)
+    .map(x => ({
+      location: String(x.location),
+      temperature: numeric(x.temperature),
+      rainfall: numeric(x.rainfall),
+      records: numeric(x.records)
+    }))
+    .filter(x => x.temperature !== null)
+    .sort((a, b) => b.temperature - a.temperature);
+
+  if (!data.length) {
+    canvas.hidden = true;
+    note.hidden = false;
+    note.textContent = 'ไม่มีข้อมูลอุณหภูมิรายจังหวัดให้แสดงตามตัวกรองนี้';
+    return;
+  }
+
+  canvas.hidden = false;
+  note.hidden = true;
+
+  provinceChart = new Chart(canvas, {
+    type: 'bar',
+    data: {
+      labels: data.map(x => x.location),
+      datasets: [{
+        label: 'อุณหภูมิ (°C)',
+        data: data.map(x => x.temperature),
+        backgroundColor: data.map((x, i) =>
+          i < 5 ? 'rgba(255,115,105,.85)' : 'rgba(77,216,232,.75)'
+        ),
+        borderColor: data.map((x, i) =>
+          i < 5 ? '#ff7369' : '#4dd8e8'
+        ),
+        borderWidth: 1,
+        borderRadius: 4,
+        rainfall: data.map(x => x.rainfall),
+        recordCounts: data.map(x => x.records)
+      }]
+    },
+    options: {
+      ...chartTheme(),
+      indexAxis: 'y',
+      interaction: {
+        intersect: false,
+        mode: 'nearest'
+      },
+      plugins: {
+        ...chartTheme().plugins,
+        legend: {
+          display: true,
+          labels: { color: '#eef5ff' }
+        },
+        tooltip: {
+          ...chartTheme().plugins.tooltip,
+          callbacks: {
+            label: context => {
+              const item = data[context.dataIndex];
+              const lines = [
+                `อุณหภูมิ: ${item.temperature} °C`,
+                `ปริมาณฝน: ${item.rainfall ?? 'ไม่มีข้อมูล'} mm`,
+                `จำนวนรายการ: ${item.records ?? '—'}`
+              ];
+              return lines;
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          beginAtZero: false,
+          title: {
+            display: true,
+            text: 'อุณหภูมิ (°C)',
+            color: '#9fb0c7'
+          },
+          ticks: { color: '#9fb0c7' },
+          grid: { color: '#26364f' }
+        },
+        y: {
+          ticks: {
+            color: '#cfe4ff',
+            autoSkip: false
+          },
+          grid: { display: false }
+        }
+      }
+    }
+  });
+}
+
+
+async function loadDashboard() {
+  const queryString = params();
+  const url = '/api/dashboard' + (queryString ? '?' + queryString : '');
+
+  try {
+    const response = await fetch(url, { headers: { 'Accept': 'application/json' } });
+    const d = await response.json();
+
+    if (!response.ok || d.error) {
+      throw new Error(d.error || `HTTP ${response.status}`);
+    }
+
+    const kpis = d.kpis || {};
+    const rows = d.rows || [];
+    const chartRows = d.chart || [];
+    const provinceRows = d.province_chart || [];
+
+    // อัปเดตตัวเลขสรุป
+    document.getElementById('records').textContent =
+      fmt(kpis.records ?? 0);
+
+    document.getElementById('locations').textContent =
+      fmt(kpis.locations ?? 0);
+
+    document.getElementById('avgTemp').textContent =
+      fmt(kpis.avg_temp);
+
+    document.getElementById('rain').textContent =
+      fmt(kpis.rainfall_sum ?? 0);
+
+    document.getElementById('sourceCount').textContent =
+      `${kpis.sources ?? 0} sources`;
+
+    // อัปเดตตาราง
+    const tbody = document.getElementById('tbody');
+    tbody.replaceChildren();
+
+    if (rows.length === 0) {
+      const tr = document.createElement('tr');
+      const td = document.createElement('td');
+      td.colSpan = 7;
+      td.className = 'empty';
+      td.textContent = 'ไม่พบข้อมูลตามตัวกรองที่เลือก';
+      tr.appendChild(td);
+      tbody.appendChild(tr);
+    } else {
+      rows.forEach(row => {
+        const tr = document.createElement('tr');
+
+        const values = [
+          row.observed_at
+            ? new Date(row.observed_at).toLocaleString('th-TH')
+            : '—',
+          row.location,
+          row.source,
+          row.temperature_c,
+          row.humidity_pct,
+          row.rainfall_mm,
+          row.weather_description
+        ];
+
+        values.forEach(value => {
+          const td = document.createElement('td');
+          td.textContent = fmt(value);
+          tr.appendChild(td);
+        });
+
+        tbody.appendChild(tr);
+      });
+    }
+
+    // วาดกราฟแยกจากการโหลดข้อมูล เพื่อไม่ให้ปัญหา Chart.js
+    // ทำให้ KPI และตารางที่โหลดสำเร็จถูกมองว่าโหลดไม่สำเร็จ
+    try {
+      renderTimeChart(chartRows);
+    } catch (chartError) {
+      console.error('renderTimeChart:', chartError);
+      document.getElementById('timeChartNote').textContent =
+        'วาดกราฟเวลาไม่สำเร็จ: ' + chartError.message;
+    }
+
+    try {
+      renderProvinceChart(provinceRows);
+    } catch (chartError) {
+      console.error('renderProvinceChart:', chartError);
+      const note = document.getElementById('provinceChartNote');
+      note.hidden = false;
+      note.textContent = 'วาดกราฟรายจังหวัดไม่สำเร็จ: ' + chartError.message;
+    }
+
+    document.getElementById('dashboardError').textContent = '';
+    console.log('Dashboard URL:', url);
+    console.log('จำนวนรายการ:', rows.length);
+
+  } catch (error) {
+    console.error('loadDashboard:', error);
+    document.getElementById('dashboardError').textContent =
+      'โหลดข้อมูลไม่สำเร็จ: ' + error.message +
+      ' — ตรวจสอบว่า Dashboard API และ PostgreSQL ทำงานอยู่';
+    document.getElementById('tbody').innerHTML =
+      '<tr><td colspan="7" class="empty">ไม่สามารถโหลดข้อมูลได้ กรุณาตรวจสอบสถานะ API</td></tr>';
+  }
+}
+
+
+async function loadPipeline() {
+  try {
+    const r = await fetch('/api/pipeline');
+    if (!r.ok) throw new Error('โหลด Pipeline ไม่สำเร็จ');
+
+    const payload = await r.json();
+    const el = document.getElementById('pipeline');
+    el.replaceChildren();
+
+    if (!r.ok || (payload && !Array.isArray(payload) && payload.error)) {
+      throw new Error(payload.error || `HTTP ${r.status}`);
+    }
+
+    const rows = Array.isArray(payload) ? payload : (payload.rows || []);
+
+    if (!rows.length) {
+      el.textContent = 'ยังไม่มีประวัติ Pipeline — Trigger DAG ใน Airflow';
+      return;
+    }
+
+    rows.forEach(x => {
+      const div = document.createElement('div');
+      div.className = 'status-row';
+
+      const color = x.status === 'success'
+        ? '#72e0a1'
+        : x.status === 'failed'
+          ? '#ff9c9c'
+          : '#ffd479';
+
+      const title = document.createElement('strong');
+      title.textContent = x.source || 'unknown';
+
+      const status = document.createElement('span');
+      status.style.color = color;
+      status.textContent = ' ● ' + (x.status || 'unknown');
+
+      const detail = document.createElement('div');
+      detail.className = 'small';
+      detail.textContent =
+        `รับ ${fmt(x.records_received)} / โหลด ${fmt(x.records_loaded)} · ` +
+        `${x.updated_at ? new Date(x.updated_at).toLocaleString() : '—'}`;
+
+      div.append(title, status, detail);
+
+      if (x.error_message) {
+        const error = document.createElement('div');
+        error.className = 'small error';
+        error.textContent = x.error_message;
+        div.appendChild(error);
+      }
+
+      el.appendChild(div);
+    });
+  } catch (e) {
+    console.error('loadPipeline:', e);
+    document.getElementById('pipeline').textContent =
+      'ไม่สามารถอ่านสถานะ Pipeline ได้: ' + e.message;
+  }
+}
+
+function clearFilters() {
+  ['location', 'source', 'dateFrom', 'dateTo'].forEach(id => {
+    document.getElementById(id).value = '';
+  });
+  loadDashboard();
+}
+
+(async function start() {
+  await initFilters();
+  await loadDashboard();
+  await loadPipeline();
+  setInterval(loadPipeline, 20000);
+})();
+</script>
+</body>
+</html>

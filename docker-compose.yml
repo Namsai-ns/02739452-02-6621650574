@@ -1,0 +1,108 @@
+services:
+  postgres:
+    image: postgres:16
+    container_name: weather_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-airflow}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
+      POSTGRES_DB: ${POSTGRES_DB:-airflow}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-airflow} -d ${POSTGRES_DB:-airflow}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  airflow-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment: &airflow-env
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER:-airflow}:${POSTGRES_PASSWORD:-airflow}@postgres:5432/${POSTGRES_DB:-airflow}
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: "local-dev-secret-change-me"
+      AIRFLOW__CORE__FERNET_KEY: ""
+      AIRFLOW_ADMIN_USER: ${AIRFLOW_ADMIN_USER:-airflow}
+      AIRFLOW_ADMIN_PASSWORD: ${AIRFLOW_ADMIN_PASSWORD:-airflow}
+      WEATHER_DB_HOST: postgres
+      WEATHER_DB_PORT: 5432
+      WEATHER_DB_NAME: ${POSTGRES_DB:-airflow}
+      WEATHER_DB_USER: ${POSTGRES_USER:-airflow}
+      WEATHER_DB_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
+      ENABLE_OPEN_METEO: ${ENABLE_OPEN_METEO:-true}
+      ENABLE_WTTR: ${ENABLE_WTTR:-true}
+      ENABLE_TMD: ${ENABLE_TMD:-true}
+      TMD_API_URL: ${TMD_API_URL:-https://data.tmd.go.th/api/WeatherToday/V2/?uid=api&ukey=api12345}
+    command: >
+      bash -c "airflow db migrate &&
+      (airflow users create --username "$${AIRFLOW_ADMIN_USER}" --password "$${AIRFLOW_ADMIN_PASSWORD}" --firstname Admin --lastname User --role Admin --email admin@example.com || true)"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+    restart: "no"
+
+  airflow-webserver:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: weather_airflow_webserver
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment: *airflow-env
+    command: airflow webserver
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+    restart: unless-stopped
+
+  airflow-scheduler:
+    build:
+      context: .
+      dockerfile: Dockerfile.airflow
+    container_name: weather_airflow_scheduler
+    depends_on:
+      postgres:
+        condition: service_healthy
+      airflow-init:
+        condition: service_completed_successfully
+    environment: *airflow-env
+    command: airflow scheduler
+    volumes:
+      - ./dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+    restart: unless-stopped
+
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile.dashboard
+    container_name: weather_dashboard
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      WEATHER_DB_HOST: postgres
+      WEATHER_DB_PORT: 5432
+      WEATHER_DB_NAME: ${POSTGRES_DB:-airflow}
+      WEATHER_DB_USER: ${POSTGRES_USER:-airflow}
+      WEATHER_DB_PASSWORD: ${POSTGRES_PASSWORD:-airflow}
+    ports:
+      - "${DASHBOARD_PORT:-5000}:5000"
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  airflow_logs:
